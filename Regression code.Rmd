@@ -1,0 +1,1400 @@
+---
+title: "Regression after response"
+author: "Pasawit"
+date: "2024-07-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{R, echo = FALSE}
+library(tidyverse)
+library(stringr)
+library(dplyr)
+library(data.table)
+```
+
+```{R,echo = FALSE}
+get_coeff2 <- function(model){
+test <- data.frame(summary(model)$coefficients[, ])
+test %>%
+  mutate(co = case_when(#1e-9 for 2 periods, 1e-10 for 5 periods
+           abs(Estimate) < 1e-9 ~ format(round(Estimate*1e13, 4), nsmall = 4, scientific = FALSE),
+           abs(Estimate) < 1e-6 & abs(Estimate) > 1e-9 ~ format(round(Estimate*1e9, 4), nsmall = 4, scientific = FALSE),
+           abs(Estimate) > 1e-6  ~ format(round(Estimate, 4), nsmall = 4, scientific = FALSE)
+           
+         ),,
+         std = case_when(
+           Std..Error < 1e-9 ~ format(round(Std..Error*1e13, 4), nsmall = 4, scientific = FALSE),
+           Std..Error < 1e-6 & Std..Error > 1e-9 ~ format(round(Std..Error*1e9, 4), nsmall = 4, scientific = FALSE),
+           Std..Error > 1e-6 ~ format(round(Std..Error, 4), nsmall = 4, scientific = FALSE)
+         ),
+         P_value = Pr...t..,
+         star = case_when(
+           P_value >= 0.1 ~ "",
+           P_value <= 0.1 & P_value > 0.05 ~ "*",
+           P_value <= 0.05 & P_value > 0.01 ~ "**",
+           P_value <= 0.01 ~ "***"
+         ),
+         result = paste(co,"(",std,')', star, sep ='')
+
+) %>%
+  select(result) -> df
+df <- rbind(df,"Adjusted R-square" = round(summary(model)$adj.r.squared, 3))
+return(df)
+}
+get_coeff5 <- function(model){
+test <- data.frame(summary(model)$coefficients[, ])
+test %>%
+  mutate(co = case_when(#1e-9 for 2 periods, 1e-10 for 5 periods
+           abs(Estimate) < 1e-10 ~ format(round(Estimate*1e13, 4), nsmall = 4, scientific = FALSE),
+           abs(Estimate) < 1e-6 & abs(Estimate) > 1e-10 ~ format(round(Estimate*1e9, 4), nsmall = 4, scientific = FALSE),
+           abs(Estimate) > 1e-6  ~ format(round(Estimate, 4), nsmall = 4, scientific = FALSE)
+           
+         ),,
+         std = case_when(
+           Std..Error < 1e-10 ~ format(round(Std..Error*1e13, 4), nsmall = 4, scientific = FALSE),
+           Std..Error < 1e-6 & Std..Error > 1e-10 ~ format(round(Std..Error*1e9, 4), nsmall = 4, scientific = FALSE),
+           Std..Error > 1e-6 ~ format(round(Std..Error, 4), nsmall = 4, scientific = FALSE)
+         ),
+         P_value = Pr...t..,
+         star = case_when(
+           P_value >= 0.1 ~ "",
+           P_value <= 0.1 & P_value > 0.05 ~ "*",
+           P_value <= 0.05 & P_value > 0.01 ~ "**",
+           P_value <= 0.01 ~ "***"
+         ),
+         result = paste(co,"(",std,')', star, sep ='')
+
+) %>%
+  select(result) -> df
+df <- rbind(df,"Adjusted R-square" = round(summary(model)$adj.r.squared, 3))
+return(df)
+}
+#model <-model_JumpCon2.volume
+#get_coeff2(model)
+```
+
+# Model and Regression {.tabset}
+
+## 2 periods {.tabset}
+
+### BNStest {.tabset}
+
+#### Based line
+
+```{R, echo = FALSE}
+### 2 periods
+Raw_BNS2 <- read.csv('RAW_BNS_5min_2_periods_statistic_with_ESG.csv')
+list_ETF <- read.csv('List_ETF.csv')
+#str(Raw_BNS2)
+
+ETFdata <- read.csv('ETFdata US Market.csv')
+#str(ETFdata)
+ETFdata %>%
+  select(Symbol, Assets, ETF.Database.Category, ESG.Score) %>%
+  mutate(AUM = as.double(gsub(",","",Assets)),
+         ETF = Symbol,
+         Category = ETF.Database.Category,
+         ESG = as.double(ESG.Score)) %>%
+  select(ETF,ESG, AUM, Category) -> ETFdata
+#str(ETFdata)
+
+#Raw_BNS2 %>%
+#  separate(ETF, c("ETF", 'Period'))%>% 
+#  merge(y = list_ETF, by = 'ETF') -> Raw_BNS2
+
+rt.2 <- read.csv('table2_4_summary-5min-NoCriteria.csv')
+rt.2 %>%
+  mutate(
+    Avg_trading_value = Volume_of_trade,
+    Avg_trading_volume = Trading.value,
+    ETF_period = paste(ETF, Period, sep = "_")
+  )%>%
+  select(ETF_period, Avg_trading_value, Avg_trading_volume) -> rt2_trading
+#str(rt2_trading)
+
+### Data for Jump inten model
+Raw_BNS2 %>%
+ as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_inten = Jump.inten...,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_inten, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period')  %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>% {. ->> Check_BNS2 } %>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+    
+  )    %>%
+  select(-c(ETF, Period, Category)) -> BNS2
+#str(BNS2)
+
+### Data for Jump mean
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_mean = Jump.mean,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_mean, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )  %>% {. ->> Check_regression }  %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Jump.mean
+#str(BNS2_Jump.mean)
+
+### Data for Abs Jump mean
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Abs_Jump_mean = Abs.Jump.mean,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Abs_Jump_mean, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )    %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Abs.Jump.mean
+#str(BNS2_Abs.Jump.mean)
+
+### Data for Jump std
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_std = Jump.std,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_std, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )  %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Jump.std
+#str(BNS2_Jump.std)
+
+### Data for Abs Jump std
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Abs_Jump_std = Abs.Jump.std,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>% 
+  select(ETF_period, AUM, Category, Abs_Jump_std, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )  %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Abs.Jump.std
+#str(BNS2_Abs.Jump.std)
+
+### Data for Jump contribution
+Raw_BNS2 %>%
+ as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_Contribution = Jump.Contribution,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_Contribution, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )  %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Jump.Contribution
+#str(BNS2_Jump.Contribution)
+
+```
+
+##### Data with Fixed effect dummy
+```{R, echo = FALSE}
+### 2 periods
+Raw_BNS2 <- read.csv('RAW_BNS_5min_2_periods_statistic_with_ESG.csv')
+list_ETF <- read.csv('List_ETF.csv')
+#str(Raw_BNS2)
+
+ETFdata <- read.csv('ETFdata US Market.csv')
+#str(ETFdata)
+ETFdata %>%
+  select(Symbol, Assets, ETF.Database.Category, ESG.Score) %>%
+  mutate(AUM = as.double(gsub(",","",Assets)),
+         ETF = Symbol,
+         Category = ETF.Database.Category,
+         ESG = as.double(ESG.Score)) %>%
+  select(ETF,ESG, AUM, Category) -> ETFdata
+#str(ETFdata)
+
+#Raw_BNS2 %>%
+#  separate(ETF, c("ETF", 'Period'))%>% 
+#  merge(y = list_ETF, by = 'ETF') -> Raw_BNS2
+
+rt.2 <- read.csv('table2_4_summary-5min-NoCriteria.csv')
+rt.2 %>%
+  mutate(
+    Avg_trading_value = Volume_of_trade,
+    Avg_trading_volume = Trading.value,
+    ETF_period = paste(ETF, Period, sep = "_")
+  )%>%
+  select(ETF_period, Avg_trading_value, Avg_trading_volume) -> rt2_trading
+#str(rt2_trading)
+
+### Data for Jump inten model
+Raw_BNS2 %>%
+ as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_inten = Jump.inten...,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select( ETF_period, AUM, Category, Jump_inten, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period')  %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>% {. ->> Check_BNS2 } %>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War'),
+    #Period_Num = case_when(
+    #Period == "Normal" ~ 1,
+    #Period == "Pandemic" ~ 2,
+    #Period == "War" ~ 3),
+    #ETF_Number = as.numeric(factor(ETF))
+  )    %>%
+  select(-c( Avg_trading_value, Period, Category)) -> BNS2
+
+#etf_dummy
+dummy_etf <- as.data.frame(model.matrix(~ ETF - 1, data= BNS2))[, -1]
+
+BNS2 %>%
+  select(-c(ETF)) %>%
+  cbind(dummy_etf) -> BNS2
+
+#str(BNS2)
+#write_csv(BNS2, "Data_Regression_3Period_JumpInten.csv")
+
+### Data for Jump mean
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_mean = Jump.mean,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_mean, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )  %>% {. ->> Check_regression }  %>%
+  select(-c(ETF,Avg_trading_value, Period, Category)) %>%
+  cbind(dummy_etf) -> BNS2_Jump.mean
+#str(BNS2_Jump.mean)
+#write_csv(BNS2_Jump.mean, "Data_Regression_3Period_JumpMean.csv")
+
+### Data for Abs Jump mean
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Abs_Jump_mean = Abs.Jump.mean,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Abs_Jump_mean, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )    %>%
+  select(-c(ETF,Avg_trading_value, Period, Category))%>%
+  cbind(dummy_etf) -> BNS2_Abs.Jump.mean
+#str(BNS2_Abs.Jump.mean)
+#write_csv(BNS2_Abs.Jump.mean, "Data_Regression_3Period_AbsJumpMean.csv")
+
+### Data for Jump std
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_std = Jump.std,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_std, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )  %>%
+  select(-c(ETF,Avg_trading_value, Period, Category))%>%
+  cbind(dummy_etf) -> BNS2_Jump.std
+#str(BNS2_Jump.std)
+#write_csv(BNS2_Jump.std, "Data_Regression_3Period_JumpSD.csv")
+
+### Data for Abs Jump std
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Abs_Jump_std = Abs.Jump.std,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>% 
+  select(ETF_period, AUM, Category, Abs_Jump_std, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )  %>%
+  select(-c(ETF,Avg_trading_value, Period, Category)) %>%
+  cbind(dummy_etf)-> BNS2_Abs.Jump.std
+#str(BNS2_Abs.Jump.std)
+#write_csv(BNS2_Abs.Jump.std, "Data_Regression_3Period_AbsJumpSD.csv")
+
+### Data for Jump contribution
+Raw_BNS2 %>%
+ as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_Contribution = Jump.Contribution,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_Contribution, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War')
+  )  %>%
+  select(-c(ETF, Avg_trading_value,Period, Category))%>%
+  cbind(dummy_etf) -> BNS2_Jump.Contribution
+#str(BNS2_Jump.Contribution)
+#write_csv(BNS2_Jump.Contribution, "Data_Regression_3Period_JumpCon.csv")
+
+```
+
+```{R}
+## Jump inten using Trading Volume
+model_JumpInten2.volume <-lm(Jump_inten ~.-Avg_trading_value , data = BNS2)
+summary(model_JumpInten2.volume)
+
+## Jump inten using Trading Vale
+model_JumpInten2.value <- lm(Jump_inten ~.-Avg_trading_volume, data = BNS2)
+summary(model_JumpInten2.value)
+
+## Jump mean using Trading Volume
+model_JumpMean2.volume <-lm(Jump_mean ~.-Avg_trading_value , data = BNS2_Jump.mean)
+summary(model_JumpMean2.volume)
+
+## Jump mean using Trading Vale
+model_JumpMean2.value <- lm(Jump_mean ~.-Avg_trading_volume, data = BNS2_Jump.mean)
+summary(model_JumpMean2.value)
+
+## Abs Jump mean using Trading Volume
+model_AbsJumpMean2.volume <-lm(Abs_Jump_mean ~.-Avg_trading_value , data = BNS2_Abs.Jump.mean)
+summary(model_AbsJumpMean2.volume)
+
+## Abs Jump mean using Trading Vale
+model_AbsJumpMean2.value <- lm(Abs_Jump_mean ~.-Avg_trading_volume, data = BNS2_Abs.Jump.mean)
+summary(model_AbsJumpMean2.value)
+
+## Jump std using Trading Volume
+model_JumpStd2.volume <-lm(Jump_std ~.-Avg_trading_value , data = BNS2_Jump.std)
+summary(model_JumpStd2.volume)
+
+## Jump std using Trading Vale
+model_JumpStd2.value <- lm(Jump_std ~.-Avg_trading_volume, data = BNS2_Jump.std)
+summary(model_JumpStd2.value)
+
+## Abs Jump std using Trading Volume
+model_AbsJumpStd2.volume <-lm(Abs_Jump_std ~.-Avg_trading_value , data = BNS2_Abs.Jump.std)
+summary(model_AbsJumpStd2.volume)
+
+## Abs Jump std using Trading Vale
+model_AbsJumpStd2.value <- lm(Abs_Jump_std ~.-Avg_trading_volume, data = BNS2_Abs.Jump.std)
+summary(model_AbsJumpStd2.value)
+
+## Jump contribution using Trading Volume
+model_JumpCon2.volume <-lm(Jump_Contribution ~.-Avg_trading_value , data = BNS2_Jump.Contribution)
+summary(model_JumpCon2.volume)
+
+## Jump contribution using Trading Vale
+model_JumpCon2.value <- lm(Jump_Contribution ~.-Avg_trading_volume, data = BNS2_Jump.Contribution)
+summary(model_JumpCon2.value)
+
+
+```
+
+```{R, echo = FALSE}
+result <- get_coeff2(model_JumpInten2.volume)
+Jumpmean <- get_coeff2(model_JumpMean2.volume)
+Absjumpmean <- get_coeff2(model_AbsJumpMean2.volume)
+Jumpsd <- get_coeff2(model_JumpStd2.volume)
+Absjumpstd <- get_coeff2(model_AbsJumpStd2.volume)
+Jumpcon <- get_coeff2(model_JumpCon2.volume)
+result %>%
+  mutate(
+    JumpInten = result,
+    JumpMean = Jumpmean$result,
+    AbsJumpMean = Absjumpmean$result,
+    JumpStd = Jumpsd$result,
+    AbsJumpStd = Absjumpstd$result,
+    JumpCon = Jumpcon$result
+  ) %>%
+  select(JumpInten, JumpMean, AbsJumpMean, JumpStd, AbsJumpStd, JumpCon) -> result2
+#write_csv(result2, 'BNS_2_basedline.csv')
+```
+
+##### Based line (Test plm)
+```{R}
+BNS2 <- pdata.frame(BNS2, index = c("ETF_Number"))
+summary(BNS2)
+## Jump inten using Trading Volume
+model_JumpInten2.volume_fixed <- plm(Jump_inten ~                             AUM+ESG_Score+Avg_trading_volume+is_small+is_mid+is_large+is_growth + is_value , data = BNS2, model = 'within', index = c("ETF_Number", "time"))
+
+view <- summary(model_JumpInten2.volume_fixed)
+
+
+```
+
+#### Interaction
+
+### Data for model
+
+```{R}
+### 2 periods
+Raw_BNS2 <- read.csv('RAW_BNS_5min_2_periods_statistic_with_ESG.csv')
+list_ETF <- read.csv('List_ETF.csv')
+#str(Raw_BNS2)
+
+ETFdata <- read.csv('ETFdata US Market.csv')
+#str(ETFdata)
+ETFdata %>%
+  select(Symbol, Assets, ETF.Database.Category, ESG.Score) %>%
+  mutate(AUM = as.double(gsub(",","",Assets)),
+         ETF = Symbol,
+         Category = ETF.Database.Category,
+         ESG = as.double(ESG.Score)) %>%
+  select(ETF,ESG, AUM, Category) -> ETFdata
+#str(ETFdata)
+
+#Raw_BNS2 %>%
+#  separate(ETF, c("ETF", 'Period'))%>% 
+#  merge(y = list_ETF, by = 'ETF') -> Raw_BNS2
+
+rt.2 <- read.csv('table2_4_summary-5min-NoCriteria.csv')
+rt.2 %>%
+  mutate(
+    Avg_trading_value = Volume_of_trade,
+    Avg_trading_volume = Trading.value,
+    ETF_period = paste(ETF, Period, sep = "_")
+  )%>%
+  select(ETF_period, Avg_trading_value, Avg_trading_volume) -> rt2_trading
+#str(rt2_trading)
+
+### Data for Jump inten model
+Raw_BNS2 %>%
+ as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_inten = Jump.inten...,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_inten, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period')  %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>% {. ->> Check_BNS2_interact } %>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War'),
+    ESGxis_pendemic = is_pendemic * ESG_Score,
+    ESGxis_war = is_war * ESG_Score
+  ) %>%
+  select(-c(ETF, Period, Category)) -> BNS2_interact
+
+
+### Data for Jump mean
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_mean = Jump.mean,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_mean, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War'),
+    ESGxis_pendemic = is_pendemic * ESG_Score,
+    ESGxis_war = is_war * ESG_Score
+  )  %>% {. ->> Check_regression }  %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Jump.mean_interact
+#str(BNS2_Jump.mean)
+
+### Data for Abs Jump mean
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Abs_Jump_mean = Abs.Jump.mean,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Abs_Jump_mean, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War'),
+    ESGxis_pendemic = is_pendemic * ESG_Score,
+    ESGxis_war = is_war * ESG_Score
+  )    %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Abs.Jump.mean_interact
+#str(BNS2_Abs.Jump.mean)
+
+### Data for Jump std
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_std = Jump.std,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_std, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War'),
+    ESGxis_pendemic = is_pendemic * ESG_Score,
+    ESGxis_war = is_war * ESG_Score
+  )  %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Jump.std_interact
+#str(BNS2_Jump.std)
+
+### Data for Abs Jump std
+Raw_BNS2 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Abs_Jump_std = Abs.Jump.std,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>% 
+  select(ETF_period, AUM, Category, Abs_Jump_std, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War'),
+    ESGxis_pendemic = is_pendemic * ESG_Score,
+    ESGxis_war = is_war * ESG_Score
+  )  %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Abs.Jump.std_interact
+#str(BNS2_Abs.Jump.std)
+
+### Data for Jump contribution
+Raw_BNS2 %>%
+ as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_Contribution = Jump.Contribution,
+         Period = str_replace(Period, 'Pen', 'Pandemic'),
+         Period = str_replace(Period, 'Pre', 'Normal'),
+         Period = str_replace(Period, 'Ur', 'War'),
+         ETF_period = paste(ETF,Period, sep="_")
+         ) %>%
+  select(ETF_period, AUM, Category, Jump_Contribution, ESG_Score) %>%
+  merge(y = rt2_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'))%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_pendemic = 1*(Period == 'Pandemic'),
+    is_war = 1*(Period == 'War'),
+    ESGxis_pendemic = is_pendemic * ESG_Score,
+    ESGxis_war = is_war * ESG_Score
+  )  %>%
+  select(-c(ETF, Period, Category)) -> BNS2_Jump.Contribution_interact
+#str(BNS2_Jump.Contribution)
+
+
+```
+
+
+
+```{R}
+## Jump inten using Trading Volume
+model_JumpInten2.volume_interact <-lm(Jump_inten ~.-Avg_trading_value , data = BNS2_interact)
+summary(model_JumpInten2.volume_interact)
+
+## Jump mean using Trading Volume
+model_JumpMean2.volume_interact <-lm(Jump_mean ~.-Avg_trading_value , data = BNS2_Jump.mean_interact)
+summary(model_JumpMean2.volume_interact)
+
+## Abs Jump mean using Trading Volume
+model_AbsJumpMean2.volume_interact <-lm(Abs_Jump_mean ~.-Avg_trading_value , data = BNS2_Abs.Jump.mean_interact)
+summary(model_AbsJumpMean2.volume_interact)
+
+## Jump std using Trading Volume
+model_JumpStd2.volume_interact <-lm(Jump_std ~.-Avg_trading_value , data = BNS2_Jump.std_interact)
+summary(model_JumpStd2.volume_interact)
+
+## Abs Jump std using Trading Volume
+model_AbsJumpStd2.volume_interact <-lm(Abs_Jump_std ~.-Avg_trading_value , data = BNS2_Abs.Jump.std_interact)
+summary(model_AbsJumpStd2.volume_interact)
+
+## Jump contribution using Trading Volume
+model_JumpCon2.volume_interact <-lm(Jump_Contribution ~.-Avg_trading_value , data = BNS2_Jump.Contribution_interact)
+summary(model_JumpCon2.volume_interact)
+
+
+```
+
+```{R, echo = FALSE}
+result <- get_coeff2(model_JumpInten2.volume_interact)
+Jumpmean <- get_coeff2(model_JumpMean2.volume_interact)
+Absjumpmean <- get_coeff2(model_AbsJumpMean2.volume_interact)
+Jumpsd <- get_coeff2(model_JumpStd2.volume_interact)
+Absjumpstd <- get_coeff2(model_AbsJumpStd2.volume_interact)
+Jumpcon <- get_coeff2(model_JumpCon2.volume_interact)
+result %>%
+  mutate(
+    JumpInten = result,
+    JumpMean = Jumpmean$result,
+    AbsJumpMean = Absjumpmean$result,
+    JumpStd = Jumpsd$result,
+    AbsJumpStd = Absjumpstd$result,
+    JumpCon = Jumpcon$result
+  ) %>%
+  select(JumpInten, JumpMean, AbsJumpMean, JumpStd, AbsJumpStd, JumpCon) -> result_interact
+```
+
+
+## 5 periods {.tabset}
+
+### BNStest {.tabset}
+
+#### Based line 
+
+##### Data with fixed effect
+```{R, echo = FALSE}
+Raw_BNS5 <- read_csv('RAW_BNS_5min_5_periods_statistic_with_ESG.csv')
+list_ETF <- read.csv('List_ETF.csv')
+
+rt.5 <- read.csv('table2_4_summary-5min_5periods-NoCriteria_edited.csv')
+
+## edit rt.5
+#rt.5$Period[rt.5$Period == 'Spring'] = 'Spring-Summer'
+rt.5 %>% 
+  mutate(
+    Period = str_replace(Period, 'normal', 'Normal'),
+    Period = str_replace(Period, 'first', 'First'),
+    Period = str_replace(Period, 'second', 'Second'),
+    Period = str_replace(Period, 'third', 'Third'),
+    Period = str_replace(Period, 'fourth', 'Fourth'),
+    Period = str_replace(Period, 'fifth', 'Fifth'),
+    Period = str_replace(Period, 'omi', 'Omi'),
+    Period = str_replace(Period, 'War', 'Ur'),
+    ETF_period = paste(ETF, Period, sep = '_'),
+    Avg_trading_value = Trading.value,
+    Avg_trading_volume = Volume_of_trade,
+  ) %>%
+  select(ETF_period, Avg_trading_value, Avg_trading_volume) -> rt5_trading
+
+## get AUM and category
+Raw_BNS5 %>%
+ # separate(ETF, c("ETF", 'Period'), sep = '_') %>% 
+  merge(y = list_ETF, by = 'ETF') -> Raw_BNS5
+
+## Jump inten
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(
+         Jump_inten = `Jump inten(%)`,
+         ETF_period = paste(ETF, Period, sep = "_"),
+         ESG_Score = `ESG Score`
+         )  %>%
+  select(ETF_period, AUM, Category, Jump_inten, ESG_Score)%>% {. ->> Check_BNS5 } %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% {. ->> Check_BNS5_2 } %>%
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')  %>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur')
+  )   %>%
+  select(-c( Avg_trading_value,Period, Category)) -> BNS5
+
+#etf_dummy
+dummy_etf <- as.data.frame(model.matrix(~ ETF - 1, data= BNS5))[, -1]
+
+BNS5 %>%
+  select(-c(ETF)) %>%
+  cbind(dummy_etf) -> BNS5
+#write_csv(BNS5, "Data_Regression_8Period_JumpInten.csv")
+
+## Jump mean
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = `ESG Score`,
+         Jump_mean = `Jump mean`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Jump_mean, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur')
+  )   %>%
+  select(-c(ETF,Avg_trading_value, Period, Category))%>%
+  cbind(dummy_etf) -> BNS5.Jump_mean
+#write_csv(BNS5.Jump_mean, "Data_Regression_8Period_JumpMean.csv")
+
+## Abs Jump mean
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = `ESG Score`,
+         Abs_Jump_mean = `Abs Jump mean`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Abs_Jump_mean, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur')
+  )   %>%
+  select(-c(ETF,Avg_trading_value, Period, Category))%>%
+  cbind(dummy_etf) -> BNS5.Abs_Jump_mean
+#write_csv(BNS5.Abs_Jump_mean, "Data_Regression_8Period_AbsJumpMean.csv")
+
+## Jump std
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = `ESG Score`,
+         Jump_std = `Jump std`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Jump_std, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur')
+  )   %>%
+  select(-c(ETF,Avg_trading_value, Period, Category))%>%
+  cbind(dummy_etf) -> BNS5.Jump_std
+#write_csv(BNS5.Jump_std, "Data_Regression_8Period_JumpSD.csv")
+
+## Abs Jump std
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = `ESG Score`,
+         Abs_Jump_std = `Abs Jump std`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Abs_Jump_std, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur')
+  )   %>%
+  select(-c(ETF,Avg_trading_value, Period, Category))%>%
+  cbind(dummy_etf) -> BNS5.Abs_Jump_std
+#write_csv(BNS5.Abs_Jump_std, "Data_Regression_8Period_AbsJumpSD.csv")
+
+## Jump contribution
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = `ESG Score`,
+         Jump_Con = `Jump Contribution`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Jump_Con, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur')
+  )   %>%
+  select(-c(ETF,Avg_trading_value, Period, Category))%>%
+  cbind(dummy_etf) -> BNS5.Jump_Con
+#write_csv(BNS5.Jump_Con, "Data_Regression_8Period_JumpCon.csv")
+
+```
+
+```{R}
+## Jump inten using Trading Volume
+model_JumpInten5.volume <-lm(Jump_inten ~.-Avg_trading_value , data = BNS5)
+summary(model_JumpInten5.volume)
+
+## Jump inten using Trading Vale
+model_JumpInten5.value <- lm(Jump_inten ~.-Avg_trading_volume, data = BNS5)
+summary(model_JumpInten5.value)
+
+## Jump mean using Trading Volume
+model_JumpMean5.volume <-lm(Jump_mean ~.-Avg_trading_value , data = BNS5.Jump_mean)
+summary(model_JumpMean5.volume)
+
+## Jump mean using Trading Vale
+model_JumpMean5.value <- lm(Jump_mean ~.-Avg_trading_volume, data = BNS5.Jump_mean)
+summary(model_JumpMean5.value)
+
+## Abs Jump mean using Trading Volume
+model_AbsJumpMean5.volume <-lm(Abs_Jump_mean ~.-Avg_trading_value , data = BNS5.Abs_Jump_mean)
+summary(model_AbsJumpMean5.volume)
+
+## Abs Jump mean using Trading Vale
+model_AbsJumpMean5.value <- lm(Abs_Jump_mean ~.-Avg_trading_volume, data = BNS5.Abs_Jump_mean)
+summary(model_AbsJumpMean5.value)
+
+## Jump std using Trading Volume
+model_JumpStd5.volume <-lm(Jump_std ~.-Avg_trading_value , data = BNS5.Jump_std)
+summary(model_JumpStd5.volume)
+
+## Jump std using Trading Vale
+model_JumpStd5.value <- lm(Jump_std ~.-Avg_trading_volume, data = BNS5.Jump_std)
+summary(model_JumpStd5.value)
+
+## Abs Jump std using Trading Volume
+model_AbsJumpStd5.volume <-lm(Abs_Jump_std ~.-Avg_trading_value , data = BNS5.Abs_Jump_std)
+summary(model_AbsJumpStd5.volume)
+
+## Abs Jump std using Trading Vale
+model_AbsJumpStd5.value <- lm(Abs_Jump_std ~.-Avg_trading_volume, data = BNS5.Abs_Jump_std)
+summary(model_AbsJumpStd5.value)
+
+## Jump contribution using Trading Volume
+model_JumpCon5.volume <-lm(Jump_Con ~.-Avg_trading_value , data = BNS5.Jump_Con)
+summary(model_JumpCon5.volume)
+
+## Jump contribution using Trading Vale
+model_JumpCon5.value <- lm(Jump_Con ~.-Avg_trading_volume, data = BNS5.Jump_Con)
+summary(model_JumpCon5.value)
+```
+
+```{R,echo = FALSE}
+result <- get_coeff5(model_JumpInten5.volume)
+Jumpmean <- get_coeff5(model_JumpMean5.volume)
+Absjumpmean <- get_coeff5(model_AbsJumpMean5.volume)
+Jumpsd <- get_coeff5(model_JumpStd5.volume)
+Absjumpstd <- get_coeff5(model_AbsJumpStd5.volume)
+Jumpcon <- get_coeff5(model_JumpCon5.volume)
+result %>%
+  mutate(
+    JumpInten = result,
+    JumpMean = Jumpmean$result,
+    AbsJumpMean = Absjumpmean$result,
+    JumpStd = Jumpsd$result,
+    AbsJumpStd = Absjumpstd$result,
+    JumpCon = Jumpcon$result
+  ) %>%
+  select(JumpInten, JumpMean, AbsJumpMean, JumpStd, AbsJumpStd, JumpCon) -> result5
+#write_csv(result5, 'BNS_5_Basedline.csv')
+```
+
+
+
+#### Interact
+
+
+```{R, echo = FALSE}
+Raw_BNS5 <- read_csv('RAW_BNS_5min_5_periods_statistic_with_ESG.csv')
+list_ETF <- read.csv('List_ETF.csv')
+
+rt.5 <- read.csv('table2_4_summary-5min_5periods-NoCriteria.csv')
+
+## edit rt.5
+#rt.5$Period[rt.5$Period == 'Spring'] = 'Spring-Summer'
+rt.5 %>% 
+  mutate(
+    Period = str_replace(Period, 'normal', 'Normal'),
+    Period = str_replace(Period, 'first', 'First'),
+    Period = str_replace(Period, 'second', 'Second'),
+    Period = str_replace(Period, 'third', 'Third'),
+    Period = str_replace(Period, 'fourth', 'Fourth'),
+    Period = str_replace(Period, 'fifth', 'Fifth'),
+    Period = str_replace(Period, 'omi', 'Omi'),
+    Period = str_replace(Period, 'War', 'Ur'),
+    ETF_period = paste(ETF, Period, sep = '_'),
+    Avg_trading_value = Trading.value,
+    Avg_trading_volume = Volume_of_trade,
+  ) %>%
+  select(ETF_period, Avg_trading_value, Avg_trading_volume) -> rt5_trading
+
+## get AUM and category
+Raw_BNS5 %>%
+ # separate(ETF, c("ETF", 'Period'), sep = '_') %>% 
+  merge(y = list_ETF, by = 'ETF') -> Raw_BNS5
+
+## Jump inten
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>% #view()
+  mutate(
+         Jump_inten = `Jump inten(%)`,
+         ETF_period = paste(ETF, Period, sep = "_"),
+         ESG_Score = `ESG Score`
+         )  %>%
+  select(ETF_period, AUM, Category, Jump_inten, ESG_Score)%>% {. ->> Check_BNS5_interact } %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')  %>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur'),
+    ESGxis_first = is_first * ESG_Score,
+    ESGxis_second = is_second * ESG_Score,
+    ESGxis_third = is_third * ESG_Score,
+    ESGxis_fourth = is_fourth*ESG_Score,
+    ESGxis_fifth = is_fifth*ESG_Score,
+    ESGxis_omi = is_omi*ESG_Score,
+    ESGxis_war = is_war*ESG_Score
+
+  )   %>%
+  select(-c(ETF, Period, Category)) %>%
+  cbind(dummy_etf) -> BNS5_interact
+
+## Jump mean
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_mean = `Jump mean`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Jump_mean, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur'),
+    ESGxis_first = is_first * ESG_Score,
+    ESGxis_second = is_second * ESG_Score,
+    ESGxis_third = is_third * ESG_Score,
+    ESGxis_fourth = is_fourth*ESG_Score,
+    ESGxis_fifth = is_fifth*ESG_Score,
+    ESGxis_omi = is_omi*ESG_Score,
+    ESGxis_war = is_war*ESG_Score
+  )   %>%
+  select(-c(ETF, Period, Category)) -> BNS5.Jump_mean_interact
+
+## Abs Jump mean
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Abs_Jump_mean = `Abs Jump mean`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Abs_Jump_mean, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur'),
+    ESGxis_first = is_first * ESG_Score,
+    ESGxis_second = is_second * ESG_Score,
+    ESGxis_third = is_third * ESG_Score,
+    ESGxis_fourth = is_fourth*ESG_Score,
+    ESGxis_fifth = is_fifth*ESG_Score,
+    ESGxis_omi = is_omi*ESG_Score,
+    ESGxis_war = is_war*ESG_Score
+  )   %>%
+  select(-c(ETF, Period, Category)) -> BNS5.Abs_Jump_mean_interact
+
+## Jump std
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_std = `Jump std`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Jump_std, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur'),
+    ESGxis_first = is_first * ESG_Score,
+    ESGxis_second = is_second * ESG_Score,
+    ESGxis_third = is_third * ESG_Score,
+    ESGxis_fourth = is_fourth*ESG_Score,
+    ESGxis_fifth = is_fifth*ESG_Score,
+    ESGxis_omi = is_omi*ESG_Score,
+    ESGxis_war = is_war*ESG_Score
+  )   %>%
+  select(-c(ETF, Period, Category)) -> BNS5.Jump_std_interact
+
+## Abs Jump std
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Abs_Jump_std = `Abs Jump std`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Abs_Jump_std, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur'),
+    ESGxis_first = is_first * ESG_Score,
+    ESGxis_second = is_second * ESG_Score,
+    ESGxis_third = is_third * ESG_Score,
+    ESGxis_fourth = is_fourth*ESG_Score,
+    ESGxis_fifth = is_fifth*ESG_Score,
+    ESGxis_omi = is_omi*ESG_Score,
+    ESGxis_war = is_war*ESG_Score
+  )   %>%
+  select(-c(ETF, Period, Category)) -> BNS5.Abs_Jump_std_interact
+
+## Jump contribution
+Raw_BNS5 %>%
+  as.data.table() %>%
+  merge(y=ETFdata,by="ETF") %>%
+  mutate(ESG_Score = ESG.Score,
+         Jump_Con = `Jump Contribution`,
+         ETF_period = paste(ETF, Period, sep = "_")) %>% 
+  select(ETF_period, AUM, Category, Jump_Con, ESG_Score) %>%
+  merge(y = rt5_trading, by = 'ETF_period') %>% 
+  separate(ETF_period, c("ETF", 'Period'), sep = '_')%>%
+  mutate(
+    is_small = 1*grepl('Small', Category),
+    is_mid = 1*(grepl('Mid', Category)),
+    is_large = 1*(grepl('Large', Category)),
+    is_growth = 1*(grepl('Growth', Category)),
+    is_value = 1*(grepl('Value', Category)),
+    is_first = 1*(Period == 'First'),
+    is_second = 1*(Period == 'Second'),
+    is_third = 1 *(Period == 'Third'),
+    is_fourth = 1*(Period == 'Fourth'),
+    is_fifth = 1*(Period == 'Fifth'),
+    is_omi = 1*(Period == 'Omi'),
+    is_war = 1*(Period == 'Ur'),
+    ESGxis_first = is_first * ESG_Score,
+    ESGxis_second = is_second * ESG_Score,
+    ESGxis_third = is_third * ESG_Score,
+    ESGxis_fourth = is_fourth*ESG_Score,
+    ESGxis_fifth = is_fifth*ESG_Score,
+    ESGxis_omi = is_omi*ESG_Score,
+    ESGxis_war = is_war*ESG_Score
+  )   %>%
+  select(-c(ETF, Period, Category)) -> BNS5.Jump_Con_interact
+
+```
+
+```{R}
+## Jump inten using Trading Volume
+model_JumpInten5.volume_interact <-lm(Jump_inten ~.-Avg_trading_value , data = BNS5_interact)
+summary(model_JumpInten5.volume_interact)
+
+## Jump mean using Trading Volume
+model_JumpMean5.volume_interact <-lm(Jump_mean ~.-Avg_trading_value , data = BNS5.Jump_mean_interact)
+summary(model_JumpMean5.volume_interact)
+
+## Abs Jump mean using Trading Volume
+model_AbsJumpMean5.volume_interact <-lm(Abs_Jump_mean ~.-Avg_trading_value , data = BNS5.Abs_Jump_mean_interact)
+summary(model_AbsJumpMean5.volume_interact)
+
+## Jump std using Trading Volume
+model_JumpStd5.volume_interact <-lm(Jump_std ~.-Avg_trading_value , data = BNS5.Jump_std_interact)
+summary(model_JumpStd5.volume_interact)
+
+## Abs Jump std using Trading Volume
+model_AbsJumpStd5.volume_interact <-lm(Abs_Jump_std ~.-Avg_trading_value , data = BNS5.Abs_Jump_std_interact)
+summary(model_AbsJumpStd5.volume_interact)
+
+## Jump contribution using Trading Volume
+model_JumpCon5.volume_interact <-lm(Jump_Con ~.-Avg_trading_value , data = BNS5.Jump_Con_interact)
+summary(model_JumpCon5.volume_interact)
+
+```
+
+```{R,echo = FALSE}
+result <- get_coeff5(model_JumpInten5.volume_interact)
+Jumpmean <- get_coeff5(model_JumpMean5.volume_interact)
+Absjumpmean <- get_coeff5(model_AbsJumpMean5.volume_interact)
+Jumpsd <- get_coeff5(model_JumpStd5.volume_interact)
+Absjumpstd <- get_coeff5(model_AbsJumpStd5.volume_interact)
+Jumpcon <- get_coeff5(model_JumpCon5.volume_interact)
+result %>%
+  mutate(
+    JumpInten = result,
+    JumpMean = Jumpmean$result,
+    AbsJumpMean = Absjumpmean$result,
+    JumpStd = Jumpsd$result,
+    AbsJumpStd = Absjumpstd$result,
+    JumpCon = Jumpcon$result
+  ) %>%
+  select(JumpInten, JumpMean, AbsJumpMean, JumpStd, AbsJumpStd, JumpCon) -> result5_interact
+#write_csv(result, 'BNS_5_Basedline.csv')
+```
+
